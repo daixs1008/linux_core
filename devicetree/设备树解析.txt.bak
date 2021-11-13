@@ -1,0 +1,326 @@
+
+
+1.设备树结构体描述：
+struct device_node {
+            const char *name;  // 来自节点中的name属性, 如果没有该属性, 则设为"NULL"
+            const char *type;  // 来自节点中的device_type属性, 如果没有该属性, 则设为"NULL"
+            phandle phandle;
+            const char *full_name;  // 节点的名字, node-name[@unit-address]
+            struct fwnode_handle fwnode;
+
+            struct  property *properties;  // 节点的属性
+            struct  property *deadprops;    /* removed properties */
+            struct  device_node *parent;   // 节点的父亲
+            struct  device_node *child;    // 节点的孩子(子节点)
+            struct  device_node *sibling;  // 节点的兄弟(同级节点)
+        #if defined(CONFIG_OF_KOBJ)
+            struct  kobject kobj;
+        #endif
+            unsigned long _flags;
+            void    *data;
+        #if defined(CONFIG_SPARC)
+            const char *path_component_name;
+            unsigned int unique_id;
+            struct of_irq_controller *irq_trans;
+        #endif
+        };
+结构体节点属性的表述：
+ struct property {
+            char    *name;    // 属性名字, 指向dtb文件中的字符串
+            int length;       // 属性值的长度
+            void    *value;   // 属性值, 指向dtb文件中value所在位置, 数据仍以big endian存储
+            struct property *next;
+        #if defined(CONFIG_OF_DYNAMIC) || defined(CONFIG_SPARC)
+            unsigned long _flags;
+        #endif
+        #if defined(CONFIG_OF_PROMTREE)
+            unsigned int unique_id;
+        #endif
+        #if defined(CONFIG_OF_KOBJ)
+            struct bin_attribute attr;
+        #endif
+        };
+        
+2.启动时识别设备树
+	start_kernel
+		setup_arch
+			setup_machine_fdt(__atags_pointer);
+				if (!dt_phys || !early_init_dt_verify(phys_to_virt(dt_phys)))  //判断是否有效的dtb  无效推出 有效继续  /#define FDT_MAGIC	0xd00dfeed	/* 4: version, 4: total size */
+					fdt_check_header(params) /* check device tree validity */ //检查设备树是否存在
+					initial_boot_params = params;           //把设备树的地址保存在全局变量里面
+				mdesc = of_flat_dt_match_machine(mdesc_best, arch_get_next_mach);  //找到最匹配的设备树属性 返回机器描述符的 machine_desc  的属性
+				void __init early_init_dt_scan_nodes(void)  
+					of_scan_flat_dt(early_init_dt_scan_chosen, boot_command_line);	/* Retrieve various information from the /chosen node */					
+					of_scan_flat_dt(early_init_dt_scan_root, NULL);/* Initialize {size,address}-cells info   early_init_dt_scan_root - fetch the top level address and size cells*/					
+					of_scan_flat_dt(early_init_dt_scan_memory, NULL); /* Setup memory, calling early_init_dt_add_memory_arch   early_init_dt_scan_memory - Look for an parse memory nodes*/
+
+3.dtb转换为device_node(unflatten)		
+		setup_arch
+			unflatten_device_tree();  //解析设备树
+				__unflatten_device_tree(initial_boot_params, NULL, &of_root,early_init_dt_alloc_memory_arch, false);
+					pr_debug("Unflattening device tree:\n");
+					pr_debug("magic: %08x\n", fdt_magic(blob));  //解析设备树的魔术
+					pr_debug("size: %08x\n", fdt_totalsize(blob));  //解析设备树的大小
+					pr_debug("version: %08x\n", fdt_version(blob));  //解析设备树的大小
+					fdt_check_header(blob)  //检查设备树信息
+					size = unflatten_dt_nodes(blob, NULL, dad, NULL);  //第一次解析  解析设备的大小  第二和第四个参数为0 ，只解析部分设备树
+					mem = dt_alloc(size + 4, __alignof__(struct device_node)); //分配内存用于保存设备树
+					unflatten_dt_nodes(blob, mem, dad, mynodes);  //第二次解析设备树   真正的解析设备树，把解析出来的设备树信息放在刚刚分配的内存中
+						for (offset = 0; offset >= 0 && depth >= initial_depth;  offset = fdt_next_node(blob, offset, &depth)) {  //使用for 循环解析每个设备树节点
+						fpsizes[depth+1] = populate_node(blob, offset, &mem, nps[depth], fpsizes[depth], &nps[depth+1], dryrun);  //在for 循环中处理设备树节点
+						populate_node
+							pathp = fdt_get_name(blob, offset, &l);
+							np = unflatten_dt_alloc(mem, sizeof(struct device_node) + allocl,	__alignof__(struct device_node));
+							populate_properties(blob, offset, mem, np, pathp, dryrun);  //递归处理设备树节点
+				of_alias_scan(early_init_dt_alloc_memory_arch); /* Get pointer to "/chosen" and "/aliases" nodes for use everywhere */
+					of_aliases = of_find_node_by_path("/aliases");  //通过路径名获取of_aliases节点名
+					of_chosen = of_find_node_by_path("/chosen");   //通过路径名获取of_chosen节点名
+					或者  of_chosen = of_find_node_by_path("/chosen@0");
+				for_each_property_of_node(of_aliases, pp) {   循环解析每个节点的属性				
+				if (!strcmp(pp->name, "name") ||              /* Skip those we do not want to proceed */
+				    !strcmp(pp->name, "phandle") ||
+				    !strcmp(pp->name, "linux,phandle"))
+					continue;
+				np = of_find_node_by_path(pp->value);
+				of_alias_add(ap, np, id, start, len);
+
+设备树的中断解析
+DT_MACHINE_START(IMX6UL, "Freescale i.MX6 UltraLite (Device Tree)")
+	.map_io		= imx6ul_map_io,
+	.init_irq	= imx6ul_init_irq,
+	.init_machine	= imx6ul_init_machine,
+	.init_late	= imx6ul_init_late,
+	.dt_compat	= imx6ul_dt_compat,
+	
+		imx6ul_init_irq
+			irqchip_init
+				of_irq_init
+					for_each_matching_node_and_match(np, matches, &match) { //遍历节点，与设备树比较
+					if (!of_find_property(np, "interrupt-controller", NULL) ||  //检查是否有 "interrupt-controller" 属性
+						!of_device_is_available(np)) continue;
+					desc->irq_init_cb = match->data;  //如果匹配的话，就把match的私有数据data（是函数）赋给函数指针-irq_init_cb
+					desc->dev = of_node_get(np);
+					desc->interrupt_parent = of_irq_find_parent(np);
+					if (desc->interrupt_parent == np)
+						desc->interrupt_parent = NULL;
+					list_add_tail(&desc->list, &intc_desc_list);  //增加到中断链表
+
+
+设备树相关常用函数：
+unflatten_dt_nodes      -- Alloc and populate a device_node from the flat tree
+of_fdt_is_compatible   --Return true if given node from the given blob has compat in its compatible list On match, returns a non-zero value with smaller values returned for more specific compatible values.
+of_fdt_match     --Return true if node matches a list of compatible values
+of_get_property
+__of_find_property
+
+
+I2C 注册流程
+注册 I2C adapter 
+drivers\i2c\muxes\i2c-mux-gpio.c
+static const struct of_device_id i2c_mux_gpio_of_match[] = { 
+	{ .compatible = "i2c-mux-gpio", },
+	
+	
+module_platform_driver(i2c_mux_gpio_driver);	 //平台设备注册  与 of_device_id 的compatible 相同就可调用 probe 函数
+	
+	.probe	= i2c_mux_gpio_probe,
+	
+	i2c_mux_gpio_probe
+		mux = devm_kzalloc(&pdev->dev, sizeof(*mux), GFP_KERNEL);  //分配一段内存 给对象
+		ret = i2c_mux_gpio_probe_dt(mux, pdev);
+		/*获取adapter 的信息后 就著注册adapter */
+		ret = i2c_mux_add_adapter(muxc, nr, mux->data.values[i], class);
+			ret = i2c_add_numbered_adapter(&priv->adap);  //根据 adap->nr   注册adapter 
+			或者 ret = i2c_add_adapter(&priv->adap);  //if (dev->of_node) {  如果有设备树节点 就根据设备树节点信息获取 adap->nr 确定I2C 控制器号
+				i2c_register_adapter(adapter);
+					dev_set_name(&adap->dev, "i2c-%d", adap->nr);
+					adap->dev.bus = &i2c_bus_type;
+					adap->dev.type = &i2c_adapter_type;
+					res = device_register(&adap->dev);  //注册设备 adapter  此函数返回 0 表示adapter 注册成功
+						device_initialize(dev);
+						return device_add(dev);
+
+I2C 注册流程
+注册 I2C adapter  //gpio 模拟 I2C 没有中处理耗时，不推荐使用
+drivers\i2c\busses\i2c-gpio.c
+static const struct of_device_id i2c_gpio_dt_ids[] = {
+	{ .compatible = "i2c-gpio", },
+
+	ret = platform_driver_register(&i2c_gpio_driver);
+	
+	.probe		= i2c_gpio_probe,
+	
+	ret = of_i2c_gpio_get_pins(pdev->dev.of_node, &sda_pin, &scl_pin);  //根据设备树获取 SDA SCL 管教
+	ret = devm_gpio_request(&pdev->dev, sda_pin, "sda");  为设备请求一个 gpio
+	ret = devm_gpio_request(&pdev->dev, scl_pin, "scl");
+	priv = devm_kzalloc(&pdev->dev, sizeof(*priv), GFP_KERNEL); //为设备和私有数据一起分配内存
+	pdata->sda_pin = sda_pin;
+	pdata->scl_pin = scl_pin;
+	of_i2c_gpio_get_props(pdev->dev.of_node, pdata);  //获取 gpio 管脚属性 （ 开漏输出等）
+	gpio_direction_output(pdata->sda_pin, 1);
+	bit_data->udelay = 50;
+	
+	ret = i2c_bit_add_numbered_bus(adap);  //设置 adapter 的数据发送和接收算法
+		 __i2c_bit_add_bus(adap, i2c_add_adapter);
+		adap->algo = &i2c_bit_algo;
+		ret = add_adapter(adap); //此处add_adapter 是一个指针函数 ：  add_adapter--> i2c_add_numbered_adapter
+
+		int i2c_add_numbered_adapter(struct i2c_adapter *adap)
+				if (adap->nr == -1) /* -1 means dynamically assign bus id */
+					return i2c_add_adapter(adap);  //动态分配一adapter适配号
+
+				return __i2c_add_numbered_adapter(adap); //根据 adap->nr 注册adapter 
+				
+				i2c_register_adapter(adapter);
+				
+				res = device_register(&adap->dev);   //注册设备 adapter  此函数返回 0 表示adapter 注册成功 
+
+
+I2C 注册流程
+注册 I2C adapter  基于imx6 I2C 控制器   接收和发送 有中断控制  不用延时等待
+drivers\i2c\busses\i2c-imx.c
+static const struct of_device_id i2c_imx_dt_ids[] = {
+	{ .compatible = "fsl,imx1-i2c", .data = &imx1_i2c_hwdata, },
+	{ .compatible = "fsl,imx21-i2c", .data = &imx21_i2c_hwdata, },
+	{ .compatible = "fsl,vf610-i2c", .data = &vf610_i2c_hwdata, },
+	{ /* sentinel */ }
+};
+
+static int __init i2c_adap_imx_init(void)
+{
+	return platform_driver_register(&i2c_imx_driver);
+}
+
+static struct platform_driver i2c_imx_driver = {
+	.probe = i2c_imx_probe,
+
+static int i2c_imx_probe(struct platform_device *pdev)
+	const struct of_device_id *of_id = of_match_device(i2c_imx_dt_ids, &pdev->dev); //获取设备树节点
+	struct imxi2c_platform_data *pdata = dev_get_platdata(&pdev->dev);  //获取i2c 平台设备数据
+	void __iomem *base;  内存资源
+	irq = platform_get_irq(pdev, 0); 获取中断号
+	res = platform_get_resource(pdev, IORESOURCE_MEM, 0); 获取设备IO资源
+	base = devm_ioremap_resource(&pdev->dev, res);  //映射到虚拟内存
+	i2c_imx = devm_kzalloc(&pdev->dev, sizeof(*i2c_imx), GFP_KERNEL);  //分配设备内存资源
+	i2c_imx->clk = devm_clk_get(&pdev->dev, NULL);  //获取时钟
+	ret = clk_prepare_enable(i2c_imx->clk);  //解析并使能时钟
+	ret = devm_request_irq(&pdev->dev, irq, i2c_imx_isr,  IRQF_NO_SUSPEND, pdev->name, i2c_imx); //注册中处理函数 i2c_imx_isr
+	init_waitqueue_head(&i2c_imx->queue);  // /* Init queue */初始化 队列
+	i2c_set_adapdata(&i2c_imx->adapter, i2c_imx); /* Set up adapter data */	
+
+
+	i2c_imx->bitrate = IMX_I2C_BIT_RATE; /* Set up clock divider */
+	ret = of_property_read_u32(pdev->dev.of_node, "clock-frequency", &i2c_imx->bitrate);
+
+	/* Set up chip registers to defaults */
+	imx_i2c_write_reg(i2c_imx->hwdata->i2cr_ien_opcode ^ I2CR_IEN,i2c_imx, IMX_I2C_I2CR);
+	imx_i2c_write_reg(i2c_imx->hwdata->i2sr_clr_opcode, i2c_imx, IMX_I2C_I2SR);
+
+	/* Init optional bus recovery function */
+	ret = i2c_imx_init_recovery_info(i2c_imx, pdev);
+
+	ret = i2c_add_numbered_adapter(&i2c_imx->adapter);  //增加一个adapter  /* Add I2C adapter */
+
+
+
+I2C驱动注册过程
+ap3216c 注册过程
+
+static const struct of_device_id of_match_ids_ap3216c[] = {
+	{ .compatible = "lite-on,ap3216c",		.data = NULL },
+	{ /* END OF LIST */ },
+};
+
+static struct i2c_driver i2c_ap3216c_driver = {
+	.driver = {
+		.name = "ap3216c",
+		.of_match_table = of_match_ids_ap3216c,
+	},
+	.probe = ap3216c_probe,
+	.remove = ap3216c_remove,
+	.id_table = ap3216c_ids,
+};
+
+
+static int __init i2c_driver_ap3216c_init(void)
+{
+	printk("%s %s %d\n", __FILE__, __FUNCTION__, __LINE__);
+	return i2c_add_driver(&i2c_ap3216c_driver);
+}
+
+
+	.probe = ap3216c_probe,
+	
+static int ap3216c_probe(struct i2c_client *client, const struct i2c_device_id *id)	
+	ap3216c_client = client;
+	/* register_chrdev */
+	major = register_chrdev(0, "ap3216c", &ap3216c_ops);
+	ap3216c_class = class_create(THIS_MODULE, "ap3216c_class");
+	device_create(ap3216c_class, NULL, MKDEV(major, 0), NULL, "ap3216c"); /* /dev/ap3216c */
+	
+					
+	static struct file_operations ap3216c_ops = {
+	.owner = THIS_MODULE,
+	.open  = ap3216c_open,
+	.read  = ap3216c_read,
+};				
+
+static int ap3216c_open (struct inode *node, struct file *file)
+{
+	i2c_smbus_write_byte_data(ap3216c_client, 0, 0x4);
+	/* delay for reset */
+	mdelay(20);
+	i2c_smbus_write_byte_data(ap3216c_client, 0, 0x3);
+	mdelay(250);
+	return 0;
+}
+					
+	static ssize_t ap3216c_read (struct file *file, char __user *buf, size_t size, loff_t *offset)
+{
+	int err;
+	char kernel_buf[6];
+	int val;
+	
+	if (size != 6)
+		return -EINVAL;
+
+	val = i2c_smbus_read_word_data(ap3216c_client, 0xA); /* read IR */
+	kernel_buf[0] = val & 0xff;
+	kernel_buf[1] = (val>>8) & 0xff;
+	
+	val = i2c_smbus_read_word_data(ap3216c_client, 0xC); /* read 鍏夊己 */
+	kernel_buf[2] = val & 0xff;
+	kernel_buf[3] = (val>>8) & 0xff;
+
+	val = i2c_smbus_read_word_data(ap3216c_client, 0xE); /* read 璺濈 */
+	kernel_buf[4] = val & 0xff;
+	kernel_buf[5] = (val>>8) & 0xff;
+	
+	err = copy_to_user(buf, kernel_buf, size);
+	return size;
+}				
+				
+				
+				
+分析 I2C 驱动  gt9xx  drivers\input\touchscreen\gt9xx\gt9xx.c
+
+static const struct of_device_id gtp_match_table[] = {
+	{.compatible = "goodix,gt9xx",},
+	{ },
+};
+
+static int __init gtp_init(void)
+		ret = i2c_add_driver(&goodix_ts_driver);   根据数组goodix_ts_driver   //注册一个 I2C 驱动 如果和设备树匹配 调用 probe
+
+
+static struct i2c_driver goodix_ts_driver = {
+	.probe		= gtp_probe,
+
+static int gtp_probe(struct i2c_client *client, const struct i2c_device_id *id)
+
+
+
+
+
+
+
